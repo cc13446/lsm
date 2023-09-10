@@ -1,3 +1,6 @@
+mod event_provider;
+mod event;
+
 use std::collections::HashMap;
 use log::info;
 use std::env;
