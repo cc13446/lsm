@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use log::info;
 use std::env;
-use std::process::exit;
 use serde_derive::Deserialize;
+use tokio::fs::File;
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -19,7 +19,6 @@ struct FileConfig {
 struct EnvConfig {
     config_file_path: String,
 }
-
 
 fn get_config_file_path(args_map: &HashMap<String, String>, default: &String) -> String {
     String::from(args_map.get("-f").unwrap_or(args_map.get("--config-file").unwrap_or(default)))
@@ -43,17 +42,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut env_config = EnvConfig {
+    let env_config = EnvConfig {
         config_file_path: String::from(get_config_file_path(&args_map, &String::from("./server_config.toml"))),
     };
 
     info!("LSM server start with config");
-    info!("LSM server config file path {}", env_config.config_file_path);
+    info!("LSM server config file path {}", &env_config.config_file_path);
 
+    // parse file config
+    let mut file = match File::open(&env_config.config_file_path).await {
+        Ok(f) => f,
+        Err(e) => panic!("Error when read config file : {} err : {}", &env_config.config_file_path, e)
+    };
 
-    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap_or_else(|err| {
-        eprintln!("Fail to open tcp server; err = {:?}", err);
-        exit(0);
+    let mut config_str = String::new();
+    match file.read_to_string(&mut config_str).await {
+        Ok(s) => s,
+        Err(e) => panic!("Error when reading file : {} err : {}", &env_config.config_file_path, e)
+    };
+
+    info!("LSM server file config \n{}", &config_str);
+
+    let file_config: FileConfig = match toml::from_str(&config_str) {
+        Ok(s) => s,
+        Err(e) => panic!("Error when convert str to config err : {}", e),
+    };
+
+    info!("LSM server start with ip {} port {}", file_config.ip, file_config.port);
+
+    let addr = format!("{}:{}", &file_config.ip, &file_config.port);
+    let listener = TcpListener::bind(&addr).await.unwrap_or_else(|err| {
+        panic!("Fail to open tcp server; err = {:?}", err);
     });
 
     loop {
