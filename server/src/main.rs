@@ -2,8 +2,9 @@ mod event_provider;
 mod event;
 
 use std::collections::HashMap;
-use log::info;
+use log::{error, info};
 use std::env;
+use std::io::Error;
 use serde_derive::Deserialize;
 use tokio::fs::File;
 use tokio::net::TcpListener;
@@ -79,29 +80,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        match listener.accept().await {
+            Ok((mut socket, addr)) => {
+                tokio::spawn(async move {
+                    info!("Receive connection from {}:{}", addr.ip(), addr.port());
 
-        tokio::spawn(async move {
-            let mut buf = [0; 1024];
+                    let mut buf = [0; 1024];
 
-            // In a loop, read data from the socket and write the data back.
-            loop {
-                let n = match socket.read(&mut buf).await {
-                    // socket closed
-                    Ok(n) if n == 0 => return,
-                    Ok(n) => n,
-                    Err(e) => {
-                        eprintln!("failed to read from socket; err = {:?}", e);
-                        return;
+                    // In a loop, read data from the socket and write the data back.
+                    loop {
+                        let n = match socket.read(&mut buf).await {
+                            // socket closed
+                            Ok(n) if n == 0 => return,
+                            Ok(n) => n,
+                            Err(e) => {
+                                eprintln!("failed to read from socket; err = {:?}", e);
+                                return;
+                            }
+                        };
+
+                        // Write the data back
+                        if let Err(e) = socket.write_all(&buf[0..n]).await {
+                            eprintln!("failed to write to socket; err = {:?}", e);
+                            return;
+                        }
                     }
-                };
-
-                // Write the data back
-                if let Err(e) = socket.write_all(&buf[0..n]).await {
-                    eprintln!("failed to write to socket; err = {:?}", e);
-                    return;
-                }
-            }
-        });
+                });
+            },
+            Err(e) => {
+                error!("Fail to accept new client connection; err = {:?}", e);
+            },
+        };
     }
 }
