@@ -1,16 +1,23 @@
-mod event_provider;
 mod event;
+mod client;
+mod utils;
 
 use std::collections::HashMap;
-use log::{error, info};
+use log::{error, info, warn};
 use std::env;
-use std::io::Error;
 use serde_derive::Deserialize;
 use tokio::fs::File;
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::select;
+use crate::client::Client;
+use crate::event::Event;
+use crate::utils::get_id;
 
 const SUB: &str = "-";
+
+// 握手数字
+const HELLO_NUM: u8 = 77;
 
 // 文件配置参数
 #[derive(Deserialize)]
@@ -81,35 +88,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         match listener.accept().await {
-            Ok((mut socket, addr)) => {
+            Ok((socket, addr)) => {
                 tokio::spawn(async move {
-                    info!("Receive connection from {}:{}", addr.ip(), addr.port());
+                    let id = get_id(&addr.ip().to_string(), addr.port());
+                    info!("Receive connection from [{}]", id);
+                    let mut client = Client::new(id, socket, addr);
+                    info!("New client from id [{}]", client.id());
 
-                    let mut buf = [0; 1024];
+                    // write hello
+                    info!("Hello to client {}", client.id());
+                    if let Err(e) = client.tcp_stream().write_u8(HELLO_NUM).await {
+                        eprintln!("Failed to write hello to [{}]; err = {:?}", client.id(), e);
+                        client.shutdown().await;
+                        return;
+                    }
 
-                    // In a loop, read data from the socket and write the data back.
-                    loop {
-                        let n = match socket.read(&mut buf).await {
-                            // socket closed
-                            Ok(n) if n == 0 => return,
-                            Ok(n) => n,
-                            Err(e) => {
-                                eprintln!("failed to read from socket; err = {:?}", e);
-                                return;
-                            }
-                        };
-
-                        // Write the data back
-                        if let Err(e) = socket.write_all(&buf[0..n]).await {
-                            eprintln!("failed to write to socket; err = {:?}", e);
+                    // wait hello
+                    match client.tcp_stream().read_u8().await {
+                        Ok(n) if n != HELLO_NUM => {
+                            warn!("Client [{}] verify hello fail", client.id());
+                            client.shutdown().await;
                             return;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            eprintln!("Failed to read hello from [{}]; err = {:?}", client.id(), e);
+                            client.shutdown().await;
+                            return;
+                        }
+                    };
+
+                    // 消息缓存
+                    let mut b = Vec::new();
+                    let mut buf = [0; 1024];
+                    info!("Alloc buffer for client [{}]", client.id());
+
+                    loop {
+
+                        // 解析消息
+                        if let Some(op) = b.first() {
+                            match *op {
+                                event::OP_GET => {
+                                    if b.len() > 3 {
+                                        let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & event::LEN_MASK as usize;
+                                        if b.len() >= (key_len + 3) {
+                                            let next = b.split_off(key_len + 3);
+                                            let content = b.split_off(3);
+                                            b = next;
+                                            info!("Receive from [{}] len {} content {:?}", client.id(), &key_len, &content);
+                                            let event = Event::GET {
+                                                key: content,
+                                            };
+                                        }
+                                    }
+                                }
+                                event::OP_SET => {}
+                                n => {
+                                    warn!("Unknown op {} from client [{}]", n, client.id());
+                                    client.shutdown().await;
+                                    return;
+                                }
+                            }
+                        }
+                        // 读取消息
+                        select! {
+                            res = client.tcp_stream().read(&mut buf) => {
+                                match res {
+                                    Ok(n) => {
+                                        if n == 0 {
+                                            warn!("Client [{}] read fail", client.id());
+                                            client.shutdown().await;
+                                            return;
+                                        } else {
+                                            b.extend_from_slice(&buf[0..n]);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to read from [{}]; err = {:?}", client.id(), e);
+                                        return;
+                                    }
+                                }
+                            }
                         }
                     }
                 });
-            },
+            }
             Err(e) => {
                 error!("Fail to accept new client connection; err = {:?}", e);
-            },
+            }
         };
     }
 }
