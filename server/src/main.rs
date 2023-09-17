@@ -124,25 +124,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("Alloc buffer for client [{}]", client.id());
 
                     loop {
-
                         // 解析消息
                         if let Some(op) = b.first() {
                             match *op {
                                 event::OP_GET => {
                                     if b.len() > 3 {
                                         let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & event::LEN_MASK as usize;
-                                        if b.len() >= (key_len + 3) {
-                                            let next = b.split_off(key_len + 3);
-                                            let content = b.split_off(3);
+                                        // 1 bit op
+                                        // 2 bit key len
+                                        // n bit key
+                                        if b.len() >= (1 + 2 + key_len) {
+                                            let next = b.split_off(1 + 2 + key_len);
+                                            let content = b.split_off(1 + 2);
                                             b = next;
-                                            info!("Receive from [{}] len {} content {:?}", client.id(), &key_len, &content);
+                                            info!("Receive get from [{}] len {} content {:?}", client.id(), &key_len, &content);
                                             let event = Event::GET {
                                                 key: content,
                                             };
                                         }
                                     }
                                 }
-                                event::OP_SET => {}
+                                event::OP_SET => {
+                                    if b.len() > 3 {
+                                        let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & event::LEN_MASK as usize;
+                                        // 1 bit op
+                                        // 2 bit key len
+                                        // n bit key
+                                        // 2 bit value len
+                                        // n bit value
+                                        if b.len() >= (1 + 2 + key_len + 2) {
+                                            let value_len = ((b[1 + 2 + key_len] as usize) * 0x100 + b[1 + 2 + key_len + 1] as usize) & event::LEN_MASK as usize;
+                                            if b.len() >= (1 + 2 + key_len + 2 + value_len) {
+                                                let next = b.split_off(1 + 2 + key_len + 2 + value_len);
+                                                let mut pre_value = b.split_off(1 + 2 + key_len);
+                                                let mut pre_key = b;
+                                                let value = pre_value.split_off(2);
+                                                let key = pre_key.split_off(1 + 2);
+                                                b = next;
+                                                info!("Receive set from [{}] len {} key {:?} value {:?}", client.id(), &key_len, &key, &value);
+                                                let event = Event::SET {
+                                                    key,
+                                                    value,
+                                                };
+                                            }
+
+                                        }
+                                    }
+                                }
                                 n => {
                                     warn!("Unknown op {} from client [{}]", n, client.id());
                                     client.shutdown().await;
