@@ -15,7 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::select;
 use tokio::sync::mpsc;
 use crate::client::Client;
-use crate::event::{Event, EventHandler, EventRes, LEN_MASK, RES_GET, RES_SET};
+use crate::event::{Event, EventHandler, EventRes, LEN_MASK, NONE_VALUE_LEN, RES_GET, RES_SET};
 use crate::trie::Trie;
 use crate::utils::get_id;
 
@@ -170,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match *op {
                                 event::OP_GET => {
                                     if b.len() > 3 {
-                                        let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & event::LEN_MASK as usize;
+                                        let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & LEN_MASK as usize;
                                         // 1 bit op
                                         // 2 bit key len
                                         // n bit key
@@ -191,30 +191,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 event::OP_SET => {
                                     if b.len() > 3 {
-                                        let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & event::LEN_MASK as usize;
+                                        let key_len = ((b[1] as usize) * 0x100 + b[2] as usize) & LEN_MASK as usize;
                                         // 1 bit op
                                         // 2 bit key len
                                         // n bit key
-                                        // 2 bit value len
+                                        // 2 bit value len; if 65535 value None
                                         // n bit value
                                         if b.len() >= (1 + 2 + key_len + 2) {
-                                            let value_len = ((b[1 + 2 + key_len] as usize) * 0x100 + b[1 + 2 + key_len + 1] as usize) & event::LEN_MASK as usize;
-                                            if b.len() >= (1 + 2 + key_len + 2 + value_len) {
-                                                let next = b.split_off(1 + 2 + key_len + 2 + value_len);
-                                                let mut pre_value = b.split_off(1 + 2 + key_len);
-                                                let mut pre_key = b;
-                                                let value = pre_value.split_off(2);
-                                                let key = pre_key.split_off(1 + 2);
+                                            let value_len = (b[1 + 2 + key_len] as usize) * 0x100 + b[1 + 2 + key_len + 1] as usize;
+                                            if value_len == NONE_VALUE_LEN as usize {
+                                                let next = b.split_off(1 + 2 + key_len + 2);
+                                                let _ = b.split_off(1 + 2 + key_len);
+                                                let key = b.split_off(1 + 2);
                                                 b = next;
-                                                info!("Receive set from [{}] len {} key {:?} value {:?}", id, &key_len, &key, &value);
+                                                info!("Receive set from [{}] len {} key {:?} value None", id, &key_len, &key);
                                                 let event = Event::SET {
                                                     id: id.clone(),
                                                     key,
-                                                    value,
+                                                    value: None,
                                                 };
                                                 event_tx.send(event).await.unwrap_or_else(|e| {
                                                     error!("Client {} send event error; {:?}", id, e);
                                                 });
+                                            } else {
+                                                let value_len = value_len & LEN_MASK as usize;
+                                                if b.len() >= (1 + 2 + key_len + 2 + value_len) {
+                                                    let next = b.split_off(1 + 2 + key_len + 2 + value_len);
+                                                    let mut pre_value = b.split_off(1 + 2 + key_len);
+                                                    let mut pre_key = b;
+                                                    let value = pre_value.split_off(2);
+                                                    let key = pre_key.split_off(1 + 2);
+                                                    b = next;
+                                                    info!("Receive set from [{}] len {} key {:?} value {:?}", id, &key_len, &key, &value);
+                                                    let event = Event::SET {
+                                                        id: id.clone(),
+                                                        key,
+                                                        value: Some(value),
+                                                    };
+                                                    event_tx.send(event).await.unwrap_or_else(|e| {
+                                                        error!("Client {} send event error; {:?}", id, e);
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -250,23 +267,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     Some(event_res) => {
                                         match event_res {
                                             EventRes::GET {id, value} => {
-                                                info!("Receive get event result, value = {:?}", &value);
-                                                if let Err(e) = socket.write_u8(RES_GET).await {
-                                                    eprintln!("Failed to write get result op to [{}]; err = {:?}", id, e);
-                                                    shutdown(&id, &client_map_clone, socket).await;
-                                                    return;
-                                                };
-                                                let len = value.len() as u16 & LEN_MASK;
-                                                if let Err(e) = socket.write_u16(len).await {
-                                                    eprintln!("Failed to write get result len to [{}]; err = {:?}", id, e);
-                                                    shutdown(&id, &client_map_clone, socket).await;
-                                                    return;
-                                                };
-                                                if let Err(e) = socket.write_all(value.as_slice()).await {
-                                                    eprintln!("Failed to write get result len to [{}]; err = {:?}", id, e);
-                                                    shutdown(&id, &client_map_clone, socket).await;
-                                                    return;
-                                                };
+                                                match value {
+                                                    Some(v) => {
+                                                        info!("Receive get event result, value = {:?}", &v);
+                                                        if let Err(e) = socket.write_u8(RES_GET).await {
+                                                            eprintln!("Failed to write get result op to [{}]; err = {:?}", id, e);
+                                                            shutdown(&id, &client_map_clone, socket).await;
+                                                            return;
+                                                        };
+                                                        let len = v.len() as u16 & LEN_MASK;
+                                                        if let Err(e) = socket.write_u16(len).await {
+                                                            eprintln!("Failed to write get result len to [{}]; err = {:?}", id, e);
+                                                            shutdown(&id, &client_map_clone, socket).await;
+                                                            return;
+                                                        };
+                                                        if let Err(e) = socket.write_all(v.as_slice()).await {
+                                                            eprintln!("Failed to write get result value to [{}]; err = {:?}", id, e);
+                                                            shutdown(&id, &client_map_clone, socket).await;
+                                                            return;
+                                                        };
+                                                    },
+                                                    None => {
+                                                        info!("Receive get event result, value = None");
+                                                        if let Err(e) = socket.write_u8(RES_GET).await {
+                                                            eprintln!("Failed to write get result op to [{}]; err = {:?}", id, e);
+                                                            shutdown(&id, &client_map_clone, socket).await;
+                                                            return;
+                                                        };
+                                                        if let Err(e) = socket.write_u16(NONE_VALUE_LEN).await {
+                                                            eprintln!("Failed to write get result len to [{}]; err = {:?}", id, e);
+                                                            shutdown(&id, &client_map_clone, socket).await;
+                                                            return;
+                                                        };
+                                                    }
+                                                }
                                             },
                                             EventRes::SET {id} => {
                                                 info!("Receive set event result");

@@ -12,6 +12,7 @@ pub const RES_GET: u8 = 0x81;
 pub const RES_SET: u8 = 0x82;
 
 pub const LEN_MASK: u16 = 0x7fff;
+pub const NONE_VALUE_LEN: u16 = 0xffff;
 
 pub enum Event {
     GET {
@@ -21,7 +22,7 @@ pub enum Event {
     SET {
         id: String,
         key: Vec<u8>,
-        value: Vec<u8>,
+        value: Option<Vec<u8>>,
     },
 }
 
@@ -29,7 +30,7 @@ pub enum Event {
 pub enum EventRes {
     GET {
         id: String,
-        value: Vec<u8>,
+        value: Option<Vec<u8>>,
     },
     SET {
         id: String,
@@ -65,10 +66,9 @@ impl EventHandler {
                                     info!("Don't have client id = {}", &id)
                                 }
                                 Some(mut client_entry) => {
-                                    // todo get
                                     client_entry.value_mut().send_event_res(EventRes::GET {
                                         id: id.clone(),
-                                        value: vec![101, 101],
+                                        value: self.trie.get(key),
                                     }).await;
                                 }
                             }
@@ -81,7 +81,7 @@ impl EventHandler {
                                     info!("Don't have client id = {}", &id)
                                 }
                                 Some(mut client_entry) => {
-                                    // todo set
+                                    self.trie.set(key, value);
                                     client_entry.value_mut().send_event_res(EventRes::SET {
                                         id: id.clone(),
                                     }).await;
