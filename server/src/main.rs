@@ -29,6 +29,7 @@ const HELLO_NUM: u8 = 77;
 struct FileConfig {
     ip: String,
     port: u32,
+    data_path: Option<String>,
 }
 
 // 命令行参数
@@ -97,7 +98,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create event loop
     tokio::spawn(async move {
         let trie = Trie::new();
-        let mut event_handler = EventHandler::new(event_rx, trie, event_client_map);
+        let mut event_handler = EventHandler::new(event_rx, trie, event_client_map, match file_config.data_path {
+            Some(path) => {
+                path.clone()
+            },
+            None => {
+                String::from("./data")
+            }
+        }).await;
         event_handler.start_event_loop().await;
         panic!("Event loop end!!!")
     });
