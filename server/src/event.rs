@@ -1,9 +1,10 @@
 use std::fs::create_dir_all;
+use std::io::SeekFrom;
 use std::sync::Arc;
 use dashmap::DashMap;
 use log::{info, warn};
 use tokio::fs::{File, try_exists};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::Receiver;
 use crate::client::Client;
 use crate::trie::Trie;
@@ -53,7 +54,6 @@ pub struct EventHandler {
     wal_files: Vec<File>,
     log_files: Vec<File>,
     index_file: File,
-    file_index: usize,
 }
 
 impl EventHandler {
@@ -74,18 +74,6 @@ impl EventHandler {
         let index_file_name = format!("{}/{}", &data_path, INDEX_FILE);
         info!("LSM open index file {}", &index_file_name);
         let mut index_file = open_file(index_file_name, false).await;
-        let file_index = match index_file.read_u8().await {
-            Ok(n) => n as usize,
-            Err(e) => {
-                info!("Read index file err {:?}", e);
-                let i = 0;
-                index_file.write_u8(i as u8).await.unwrap_or_else(|e| { panic!("Write index file fail err = {:?}", e) });
-                index_file.flush().await.unwrap_or_else(|e| { panic!("Flush index file fail err = {:?}", e) });
-                i
-            }
-        };
-        info!("File index is {}", file_index);
-
         for i in 0..FILE_BATCH {
             let wal_file_name = format!("{}/{}{}", &data_path, WAL_FILE_PREFIX, i);
             let log_file_name = format!("{}/{}{}", &data_path, LOG_FILE_PREFIX, i);
@@ -104,11 +92,34 @@ impl EventHandler {
             wal_files,
             log_files,
             index_file,
-            file_index,
         }
     }
 
+    async fn refresh_index_file(&mut self, index: u8) {
+        self.index_file.seek(SeekFrom::Start(0)).await.unwrap_or_else(|e| { panic!("Seek index file fail err = {:?}", e) });
+        self.index_file.write_u8(index).await.unwrap_or_else(|e| { panic!("Write index file fail err = {:?}", e) });
+        self.index_file.sync_all().await.unwrap_or_else(|e| { panic!("Flush index file fail err = {:?}", e) });
+    }
+
     pub async fn start_event_loop(&mut self) {
+        // read index
+        let file_index = match self.index_file.read_u8().await {
+            Ok(n) if n == 1 || n == 0 => n,
+            Ok(n) => {
+                info!("Read index invalid {} default 0", n);
+                let i = 0;
+                self.refresh_index_file(i).await;
+                i
+            }
+            Err(e) => {
+                info!("Read index file err {:?}", e);
+                let i = 0;
+                self.refresh_index_file(i).await;
+                i
+            }
+        } as usize;
+
+        info!("File index is {}", file_index);
         // read from Log file
 
         // read from WAL file
