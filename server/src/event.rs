@@ -156,7 +156,7 @@ impl EventHandler {
         info!("File index is {}", file_index);
 
         // read from LOG file and WAL file
-        let file_index_last = FILE_BATCH - file_index;
+        let file_index_last = FILE_BATCH - 1 - file_index;
         // last log
         let mut log_file_last_content = Vec::new();
         self.log_files[file_index_last].lock().await.read_to_end(&mut log_file_last_content).await.expect("Read last log file fail");
@@ -230,7 +230,7 @@ impl EventHandler {
                             // check wal file size:10M
                             if self.wal_files[file_index].metadata().await.expect("Read wal file meta fail").len() > 1 * 1024 * 1024 * 10 && !saving.load(Ordering::Relaxed) {
                                 // change file index
-                                file_index = FILE_BATCH - file_index;
+                                file_index = FILE_BATCH - 1 - file_index;
                                 self.refresh_index_file(file_index as u8).await;
 
                                 // save the log file
