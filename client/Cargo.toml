@@ -5,3 +5,8 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.32.0", features = ["full"] }
+toml = "0.8.0"
+serde_derive = "1.0.32"
+serde = "1.0.32"
+log = "0.4"
+env_logger = "0.10.0"

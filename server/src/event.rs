@@ -167,7 +167,7 @@ impl EventHandler {
         self.load(wal_file_last_content).await;
         // this wal
         let mut wal_file_this_content = Vec::new();
-        self.wal_files[file_index_last].read_to_end(&mut wal_file_this_content).await.expect("Read this wal file fail");
+        self.wal_files[file_index].read_to_end(&mut wal_file_this_content).await.expect("Read this wal file fail");
         self.load(wal_file_this_content).await;
 
         // is saving
