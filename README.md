@@ -1,6 +1,5 @@
-A lsm key value database
-
+# A lsm key value database
 - [x] Tcp
 - [x] Trie
-- [ ] WAL log
-- [ ] Sorted log file
+- [x] WAL log
+- [x] Sorted log file

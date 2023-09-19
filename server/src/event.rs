@@ -165,6 +165,10 @@ impl EventHandler {
         let mut wal_file_last_content = Vec::new();
         self.wal_files[file_index_last].read_to_end(&mut wal_file_last_content).await.expect("Read last wal file fail");
         self.load(wal_file_last_content).await;
+        // this log
+        let mut log_file_this_content = Vec::new();
+        self.log_files[file_index].lock().await.read_to_end(&mut log_file_this_content).await.expect("Read this log file fail");
+        self.load(log_file_this_content).await;
         // this wal
         let mut wal_file_this_content = Vec::new();
         self.wal_files[file_index].read_to_end(&mut wal_file_this_content).await.expect("Read this wal file fail");
@@ -226,29 +230,33 @@ impl EventHandler {
                                     }).await;
                                 }
                             }
-
-                            // check wal file size:10M
-                            if self.wal_files[file_index].metadata().await.expect("Read wal file meta fail").len() > 1 * 1024 * 1024 * 10 && !saving.load(Ordering::Relaxed) {
-                                // change file index
-                                file_index = FILE_BATCH - 1 - file_index;
-                                self.refresh_index_file(file_index as u8).await;
-
-                                // save the log file
-                                let clone_trie = self.trie.clone();
-                                let file = self.log_files[file_index].clone();
-                                let clone_saving = saving.clone();
-                                tokio::spawn(async move {
-                                    clone_saving.store(true, Ordering::Relaxed);
-                                    clone_trie.save(&file);
-                                    clone_saving.store(false, Ordering::Relaxed);
-                                });
-                            }
                         }
                     }
                 }
                 None => {
                     warn!("Receive event none");
                 }
+            }
+            // check wal file size:10M
+            if self.wal_files[file_index].metadata().await.expect("Read wal file meta fail").len() > 1 * 1024 * 1024 * 10 && !saving.load(Ordering::Relaxed) {
+                // change file index
+                file_index = FILE_BATCH - 1 - file_index;
+                self.refresh_index_file(file_index as u8).await;
+                // clear wal file
+                self.wal_files[file_index].set_len(0).await.expect("Set this wal len zero err");
+
+                // save the log file
+                let clone_trie = self.trie.clone();
+                let file = self.log_files[file_index].clone();
+                let clone_saving = saving.clone();
+                tokio::spawn(async move {
+                    info!("Save to log file");
+                    clone_saving.store(true, Ordering::Relaxed);
+                    file.lock().await.set_len(0).await.expect("Set this log file len zero err");
+                    clone_trie.save(&file);
+                    clone_saving.store(false, Ordering::Relaxed);
+                    info!("Save to log file done");
+                });
             }
         }
     }
